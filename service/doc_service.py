@@ -58,26 +58,28 @@ def delete_doc(doc_id: str) -> dict | None:
         return None
 
     kb_id = doc.get("kb_id", "")
-    file_name = doc.get("file_name", "")
 
-    try:
-        expr = f'kb_id == "{kb_id}" and file_name == "{file_name}"'
-        deleted_count = vc.delete(expr)
-        logger.info("Milvus 删除完成: %d 条", deleted_count)
-    except Exception as e:
-        logger.warning("Milvus 删除失败: %s", e)
+    # 1. 从 PG chunks 查 milvus_pk 列表，用于精确删除 Milvus 向量
+    chunk_items, _ = dao.list_chunks(doc_id, page=1, page_size=100000)
+    milvus_pks = [c["milvus_pk"] for c in chunk_items if c.get("milvus_pk", 0) > 0]
+    if milvus_pks:
+        try:
+            deleted_count = vc.delete_by_ids(milvus_pks)
+            logger.info("Milvus 删除完成: %d 条", deleted_count)
+        except Exception as e:
+            logger.warning("Milvus 删除失败: %s", e)
 
     chunk_count = doc.get("chunk_count", 0)
     dao.incr_kb_doc_count(kb_id, -1)
     dao.incr_kb_chunk_count(kb_id, -chunk_count)
 
-    # 清理 PG chunks 表
+    # 2. 清理 PG chunks 表
     try:
         dao.delete_chunks_by_doc(doc_id)
     except Exception as e:
         logger.warning("PG chunks 删除失败: %s", e)
 
-    # 清理 MinIO 原始文件
+    # 3. 清理 MinIO 原始文件
     object_key = doc.get("object_key", "")
     if object_key:
         try:

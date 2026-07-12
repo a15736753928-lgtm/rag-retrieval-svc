@@ -1,4 +1,4 @@
-"""完整检索链路：双向量召回 → RRF 融合 → Rerank → 高亮。"""
+"""完整检索链路：双向量召回 → RRF 融合 → PG 补全 → Rerank → 高亮。"""
 
 from __future__ import annotations
 
@@ -55,6 +55,26 @@ async def search(req: SearchQueryRequest) -> list[SearchResultItem]:
     # ── 3. RRF 融合 ────────────────────────────────────────
     fused = _rrf_fuse(dense_hits, sparse_hits, rerank_top_k, dense_weight, sparse_weight)
 
+    # ── 3.5 PG 补全：用 Milvus ID 批量查 chunks + documents ──
+    if fused:
+        milvus_ids = [r["id"] for r in fused]
+        chunk_map = dao.get_chunks_by_milvus_pks(milvus_ids)
+        # 补全每个融合结果
+        for r in fused:
+            ch = chunk_map.get(r["id"])
+            if ch:
+                r["chunk_text"] = ch.get("chunk_text", "")
+                r["chunk_index"] = ch.get("chunk_index", 0)
+                r["file_name"] = ch.get("file_name", "")
+                r["kb_id"] = ch.get("kb_id", r.get("kb_id", ""))
+            else:
+                # PG 里没有对应记录（数据异常），用默认值
+                r["chunk_text"] = ""
+                r["chunk_index"] = 0
+                r["file_name"] = ""
+        # 去掉 PG 里也没文本的结果
+        fused = [r for r in fused if r.get("chunk_text", "").strip()]
+
     # ── 4. Rerank ──────────────────────────────────────────
     if fused:
         texts = [r.get("chunk_text", "") for r in fused]
@@ -93,19 +113,21 @@ async def search(req: SearchQueryRequest) -> list[SearchResultItem]:
 
 
 async def get_chunk_content(chunk_id: int, query: str = "") -> dict | None:
-    """获取分片原文 + 高亮位置。"""
-    row = vc.get_by_id(chunk_id)
-    if not row:
+    """获取分片原文 + 高亮位置（从 PG 查）。"""
+    # chunk_id 对外是 milvus_pk，从 PG 查
+    chunk_map = dao.get_chunks_by_milvus_pks([chunk_id])
+    ch = chunk_map.get(chunk_id)
+    if not ch:
         return None
-    content = row.get("chunk_text", "")
+    content = ch.get("chunk_text", "")
     highlights: list[HighlightSpan] = []
     if query:
         highlights = _compute_highlight_spans(query, content)
     return {
-        "id": str(row["id"]),
-        "kb_id": row.get("kb_id", ""),
-        "file_name": row.get("file_name", ""),
-        "chunk_index": row.get("chunk_index", 0),
+        "id": str(chunk_id),
+        "kb_id": ch.get("kb_id", ""),
+        "file_name": ch.get("file_name", ""),
+        "chunk_index": ch.get("chunk_index", 0),
         "content": content,
         "highlights": highlights,
     }

@@ -52,18 +52,13 @@ def ensure_collection():
         _collection_ready = True
         return
 
-    # 创建 schema
+    # 创建 schema —— 只存向量+ID，文本在 PG chunks 表，文件在 MinIO
     schema = CollectionSchema(
         fields=[
             FieldSchema("id", DataType.INT64, is_primary=True, auto_id=True),
             FieldSchema("kb_id", DataType.VARCHAR, max_length=128),
-            FieldSchema("file_path", DataType.VARCHAR, max_length=1024),
-            FieldSchema("file_name", DataType.VARCHAR, max_length=256),
-            FieldSchema("chunk_index", DataType.INT32),
-            FieldSchema("chunk_text", DataType.VARCHAR, max_length=65535),
             FieldSchema("dense_vector", DataType.FLOAT_VECTOR, dim=settings.dense_vector_dim),
             FieldSchema("sparse_vector", DataType.SPARSE_FLOAT_VECTOR),
-            FieldSchema("create_time", DataType.INT64),
         ],
         enable_dynamic_field=False,
     )

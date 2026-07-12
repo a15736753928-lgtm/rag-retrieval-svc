@@ -9,10 +9,7 @@ from core.milvus_manager import get_collection, get_lite
 
 logger = logging.getLogger(__name__)
 
-_FIELD_OUTPUT = [
-    "id", "kb_id", "file_path", "file_name",
-    "chunk_index", "chunk_text", "create_time",
-]
+_FIELD_OUTPUT = ["id", "kb_id"]
 
 
 def insert(entities: list[dict]) -> list[int]:
@@ -82,29 +79,12 @@ def delete(expr: str) -> int:
     return coll.delete(pks)
 
 
-def query_chunks(
-    expr: str,
-    offset: int = 0,
-    limit: int = 20,
-    sort: str = "create_time desc",
-) -> tuple[list[dict], int]:
-    """分页查询分片，返回 (items, total)。"""
+def delete_by_ids(pks: list[int]) -> int:
+    """按主键列表删除。"""
+    if not pks:
+        return 0
     coll = get_collection()
-
-    # 总数
-    if expr:
-        count_rows = coll.query(expr=expr, output_fields=["count(id)"], limit=1)
-        total = count_rows[0].get("count(id)", 0) if count_rows else 0
-    else:
-        total = coll.num_entities
-
-    items = coll.query(
-        expr=expr,
-        output_fields=_FIELD_OUTPUT,
-        limit=limit,
-        offset=offset,
-    )
-    return items, total
+    return coll.delete(pks)
 
 
 def get_all_kb_ids() -> list[str]:
@@ -143,6 +123,6 @@ def _flatten(results: list) -> list[dict]:
             out.append({
                 "id": hit["id"],
                 "distance": float(hit["distance"]),
-                **entity,
+                "kb_id": entity.get("kb_id", ""),
             })
     return out

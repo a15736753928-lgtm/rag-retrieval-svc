@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from llama_index.core.base.embeddings.base import BaseEmbedding
@@ -187,27 +186,17 @@ def _merge_short_chunks(chunks: list[str], min_size: int) -> list[str]:
 
 
 def make_entities(
-    chunks: list[str],
     kb_id: str,
-    file_path: str,
-    file_name: str,
     dense_vectors: list[list[float]],
     sparse_vectors: list[dict[int, float]] | None = None,
 ) -> list[dict]:
-    """已分片的文本列表 → Milvus 实体列表。"""
-    now_ms = int(time.time() * 1000)
-
+    """生成 Milvus 实体列表 —— 只存 kb_id + 向量，文本在 PG chunks 表。"""
     entities = []
-    for i, chunk_text in enumerate(chunks):
+    for i in range(len(dense_vectors)):
         entity = {
             "kb_id": kb_id,
-            "file_path": file_path,
-            "file_name": file_name,
-            "chunk_index": i,
-            "chunk_text": chunk_text,
-            "dense_vector": dense_vectors[i] if i < len(dense_vectors) else [],
+            "dense_vector": dense_vectors[i],
             "sparse_vector": sparse_vectors[i] if sparse_vectors and i < len(sparse_vectors) else {},
-            "create_time": now_ms,
         }
         entities.append(entity)
     return entities

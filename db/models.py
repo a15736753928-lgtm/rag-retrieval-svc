@@ -230,11 +230,32 @@ def list_chunks(doc_id: str, page: int = 1, page_size: int = 100) -> tuple[list[
 
         offset = (page - 1) * page_size
         cur.execute(
-            "SELECT id, chunk_index, chunk_text FROM chunks "
+            "SELECT id, chunk_index, chunk_text, milvus_pk FROM chunks "
             "WHERE doc_id = %s ORDER BY chunk_index LIMIT %s OFFSET %s",
             (doc_id, page_size, offset),
         )
         return _rows(cur), total
+
+
+def get_chunks_by_milvus_pks(milvus_pks: list[int]) -> dict[int, dict]:
+    """用 Milvus 主键批量查 PG chunks，返回 {milvus_pk: chunk_row}。"""
+    if not milvus_pks:
+        return {}
+    with _get_db() as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        pks = tuple(milvus_pks)
+        cur.execute(
+            "SELECT c.id, c.doc_id, c.kb_id, c.chunk_index, c.chunk_text, c.milvus_pk, "
+            "d.file_name FROM chunks c "
+            "LEFT JOIN documents d ON c.doc_id = d.id "
+            "WHERE c.milvus_pk IN %s",
+            (pks,),
+        )
+        result: dict[int, dict] = {}
+        for row in cur.fetchall():
+            r = dict(row)
+            result[r["milvus_pk"]] = r
+        return result
 
 
 def delete_chunks_by_doc(doc_id: str) -> int:

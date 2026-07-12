@@ -138,10 +138,7 @@ def _run_ingest(
         # ── 入库 ─────────────────────────────────────────────
         dao.update_upload_task(task_id, status="indexing", progress=80)
         entities = make_entities(
-            chunks=chunks,
             kb_id=kb_id,
-            file_path=filename,
-            file_name=filename,
             dense_vectors=dense_vecs,
             sparse_vectors=sparse_vecs,
         )

@@ -125,6 +125,7 @@ class DocumentItem(BaseModel):
     file_size: int = 0
     file_type: str = ""
     chunk_count: int = 0
+    file_hash: str = ""
     status: str = "pending"
     ingested_at: str = ""
 
@@ -144,8 +145,29 @@ class DocumentDetail(BaseModel):
     file_size: int = 0
     file_type: str = ""
     chunk_count: int = 0
+    file_hash: str = ""
     status: str = "pending"
     ingested_at: str = ""
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  文档判重
+# ═══════════════════════════════════════════════════════════════════════
+
+class DuplicateCheckRequest(BaseModel):
+    kb_id: str = Field(..., min_length=1)
+    file_hash: str = Field(..., min_length=64, max_length=64)
+
+
+class DuplicateCheckResponse(BaseModel):
+    duplicate: bool = False
+    existing: DocumentItem | None = None
+
+
+class DuplicateConflictResponse(BaseModel):
+    existing_doc_id: str = ""
+    existing_file_name: str = ""
+    existing_ingested_at: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════════════

@@ -76,6 +76,7 @@ def _init_tables():
                 file_type   VARCHAR(20) DEFAULT '',
                 chunk_count INT DEFAULT 0,
                 object_key  TEXT DEFAULT '',
+                file_hash   VARCHAR(64) DEFAULT '',
                 status      VARCHAR(20) DEFAULT 'pending',
                 uploaded_at BIGINT DEFAULT 0,
                 created_at  BIGINT NOT NULL
@@ -120,6 +121,14 @@ def _init_tables():
                 updated_at  BIGINT NOT NULL
             )
         """)
+        # ── 存量兼容：为已存在的表追加 file_hash 列 + 唯一索引 ──
+        # ALTER TABLE ADD COLUMN 先执行，确保列存在后再建索引
+        cur.execute("ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_hash VARCHAR(64) DEFAULT ''")
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_kb_file_hash "
+            "ON documents (kb_id, file_hash) WHERE file_hash != ''"
+        )
+
         _init_done = True
         logger.info("PostgreSQL 表初始化完成")
     finally:

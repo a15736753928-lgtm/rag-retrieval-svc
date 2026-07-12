@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -39,6 +40,7 @@ def create_ingest_task(
     file_bytes: bytes,
     filename: str,
     kb_id: str,
+    file_hash: str = "",
 ) -> dict:
     """创建入库任务：写入元数据，返回 task + doc 信息，启动后台线程处理。"""
     file_type = Path(filename).suffix.lower().lstrip(".")
@@ -46,13 +48,14 @@ def create_ingest_task(
 
     doc_id = "doc_" + uuid.uuid4().hex[:8]
 
-    # 创建文档记录
+    # 创建文档记录（含 file_hash 用于判重）
     doc = dao.create_document(
         doc_id=doc_id,
         kb_id=kb_id,
         file_name=filename,
         file_size=file_size,
         file_type=file_type,
+        file_hash=file_hash,
     )
 
     # 创建上传任务

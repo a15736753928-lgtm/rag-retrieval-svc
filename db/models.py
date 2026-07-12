@@ -130,14 +130,15 @@ def create_document(
     file_size: int = 0,
     file_type: str = "",
     object_key: str = "",
+    file_hash: str = "",
 ) -> dict:
     now = int(time.time() * 1000)
     with _get_db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(
-            "INSERT INTO documents (id, kb_id, file_name, file_size, file_type, chunk_count, object_key, status, uploaded_at, created_at) "
-            "VALUES (%s, %s, %s, %s, %s, 0, %s, 'pending', 0, %s)",
-            (doc_id, kb_id, file_name, file_size, file_type, object_key, now),
+            "INSERT INTO documents (id, kb_id, file_name, file_size, file_type, chunk_count, object_key, file_hash, status, uploaded_at, created_at) "
+            "VALUES (%s, %s, %s, %s, %s, 0, %s, %s, 'pending', 0, %s)",
+            (doc_id, kb_id, file_name, file_size, file_type, object_key, file_hash, now),
         )
         cur.execute("SELECT * FROM documents WHERE id = %s", (doc_id,))
         return dict(cur.fetchone())
@@ -147,6 +148,19 @@ def get_document(doc_id: str) -> dict | None:
     with _get_db() as conn:
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute("SELECT * FROM documents WHERE id = %s", (doc_id,))
+        return _row(cur)
+
+
+def check_duplicate(kb_id: str, file_hash: str) -> dict | None:
+    """按 kb_id + file_hash 查重，返回已存在的文档或 None。"""
+    if not file_hash:
+        return None
+    with _get_db() as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            "SELECT * FROM documents WHERE kb_id = %s AND file_hash = %s LIMIT 1",
+            (kb_id, file_hash),
+        )
         return _row(cur)
 
 

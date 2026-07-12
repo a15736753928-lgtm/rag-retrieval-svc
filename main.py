@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 import time
@@ -23,6 +24,9 @@ from schemas import (
     DistributionItem,
     DocumentDetail,
     DocumentItem,
+    DuplicateCheckRequest,
+    DuplicateCheckResponse,
+    DuplicateConflictResponse,
     HealthCheck,
     IngestUploadResponse,
     KnowledgeBaseCreate,
@@ -416,8 +420,12 @@ async def get_document_chunks(
 async def documents_upload(
     file: UploadFile = File(...),
     kb_id: str = Form(...),
+    file_hash: str = Form(""),
     _auth: bool = Depends(require_auth),
 ):
+    from db.models import check_duplicate
+    from utils.text_processor import format_time
+
     # 检查知识库
     kb = kb_service.get_kb(kb_id)
     if not kb:
@@ -430,12 +438,63 @@ async def documents_upload(
     if not check_size(len(content)):
         return Resp(code=413, message=f"文件过大 ({len(content)/1024/1024:.1f}MB > {settings.max_file_size/1024/1024:.0f}MB)", data=None)
 
+    # 后端计算 SHA-256 作为权威哈希值（不信任前端）
+    file_hash_computed = hashlib.sha256(content).hexdigest()
+
+    # 判重兜底（应对并发上传 or 前端绕过预校验）
+    dup = check_duplicate(kb_id, file_hash_computed)
+    if dup:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": 409,
+                "message": "该知识库下已存在相同文件",
+                "data": {
+                    "existing_doc_id": dup["id"],
+                    "existing_file_name": dup["file_name"],
+                    "existing_ingested_at": format_time(dup.get("uploaded_at", 0)),
+                },
+            },
+        )
+
     result = ingest_svc.create_ingest_task(
         file_bytes=content,
         filename=file.filename or "unknown",
         kb_id=kb_id,
+        file_hash=file_hash_computed,
     )
     return Resp(data=IngestUploadResponse(**result))
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  3.17.1 文件判重预校验
+# ═══════════════════════════════════════════════════════════════════════
+
+@app.get("/api/v1/documents/check-duplicate")
+async def documents_check_duplicate(
+    kb_id: str = Query(...),
+    file_hash: str = Query(..., min_length=64, max_length=64),
+    _auth: bool = Depends(require_auth),
+):
+    from db.models import check_duplicate
+
+    dup = check_duplicate(kb_id, file_hash.lower())
+    if dup:
+        # 组装已有的文档信息，方便前端展示
+        existing = DocumentItem(
+            id=dup["id"],
+            file_name=dup["file_name"],
+            kb_id=dup["kb_id"],
+            file_size=dup.get("file_size", 0),
+            file_type=dup.get("file_type", ""),
+            chunk_count=dup.get("chunk_count", 0),
+            file_hash=dup.get("file_hash", ""),
+            status=dup.get("status", "completed"),
+            ingested_at=dup.get("uploaded_at", ""),
+        )
+        return Resp(data=DuplicateCheckResponse(duplicate=True, existing=existing).model_dump())
+
+    return Resp(data=DuplicateCheckResponse(duplicate=False, existing=None).model_dump())
 
 
 # ═══════════════════════════════════════════════════════════════════════

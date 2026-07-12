@@ -1,0 +1,127 @@
+### ── Health ──────────────────────────────────────────────────────────
+GET http://127.0.0.1:8000/health
+Accept: application/json
+
+### ── Stats (frontend dashboard) ─────────────────────────────────────
+GET http://127.0.0.1:8000/v1/stats
+Accept: application/json
+
+### ── 1. Ingest: BGE-M3 only ─────────────────────────────────────────
+POST http://127.0.0.1:8000/v1/documents/ingest
+Content-Type: application/json
+
+{
+  "chunks": [
+    {
+      "text": "FastAPI is a modern web framework for building APIs with Python. It is fast and easy to use, with automatic OpenAPI documentation.",
+      "metadata": {"source": "docs", "topic": "fastapi"}
+    },
+    {
+      "text": "RAG (Retrieval-Augmented Generation) is a technique that combines document retrieval with LLM text generation for accurate answers.",
+      "metadata": {"source": "blog", "topic": "rag"}
+    },
+    {
+      "text": "Milvus Lite is an embedded vector database that runs locally with zero configuration, perfect for prototyping and small-scale deployments.",
+      "metadata": {"source": "docs", "topic": "vector-db"}
+    },
+    {
+      "text": "BGE-M3 is a multilingual embedding model supporting dense retrieval, sparse retrieval, and multi-vector retrieval.",
+      "metadata": {"source": "research", "topic": "embedding"}
+    },
+    {
+      "text": "BM25 is a traditional term-frequency based ranking function used for lexical search in information retrieval systems.",
+      "metadata": {"source": "docs", "topic": "search"}
+    },
+    {
+      "text": "BGE-Reranker is a cross-encoder model that re-ranks candidate documents for improved retrieval accuracy.",
+      "metadata": {"source": "research", "topic": "reranker"}
+    }
+  ],
+  "collection": "default"
+}
+
+### ── 2. Ingest raw text (auto-chunked) ──────────────────────────────
+POST http://127.0.0.1:8000/v1/documents/ingest-text
+Content-Type: application/x-www-form-urlencoded
+
+text=BGE-M3是一种多语言嵌入模型，支持稠密检索、稀疏检索和多向量检索。它在多种语言上表现出色，包括中文和英文。&collection=default&metadata={"source":"manual","language":"zh"}
+
+### ── 3. Rebuild BM25 index (separate step!) ─────────────────────────
+POST http://127.0.0.1:8000/v1/index/bm25/rebuild?collection=default
+Accept: application/json
+
+### ── 4. Full hybrid search ──────────────────────────────────────────
+POST http://127.0.0.1:8000/v1/search
+Content-Type: application/json
+
+{
+  "query": "what is the best way to retrieve documents?",
+  "collection": "default",
+  "top_k": 5,
+  "hybrid": true,
+  "rerank": true
+}
+
+### Search: dense only (no BM25, no reranker)
+POST http://127.0.0.1:8000/v1/search
+Content-Type: application/json
+
+{
+  "query": "embedding model for Chinese",
+  "collection": "default",
+  "top_k": 5,
+  "hybrid": false,
+  "rerank": false
+}
+
+### Search: with metadata filter
+POST http://127.0.0.1:8000/v1/search
+Content-Type: application/json
+
+{
+  "query": "vector database",
+  "collection": "default",
+  "top_k": 5,
+  "filters": {"topic": "vector-db"}
+}
+
+### ── 5. Documents CRUD ──────────────────────────────────────────────
+### List documents (paginated)
+GET http://127.0.0.1:8000/v1/documents?collection=default&offset=0&limit=10
+Accept: application/json
+
+### Get single document (replace doc_id with actual ID from list)
+GET http://127.0.0.1:8000/v1/documents/some-doc-id?collection=default
+Accept: application/json
+
+### Delete single document
+DELETE http://127.0.0.1:8000/v1/documents/some-doc-id?collection=default
+Accept: application/json
+
+### ── 6. Collections ─────────────────────────────────────────────────
+GET http://127.0.0.1:8000/v1/collections
+Accept: application/json
+
+### Get collection detail
+GET http://127.0.0.1:8000/v1/collections/default
+Accept: application/json
+
+### Delete entire collection (caution!)
+DELETE http://127.0.0.1:8000/v1/collections/test
+Accept: application/json
+
+### ── 7. Upload file (TXT example) ───────────────────────────────────
+POST http://127.0.0.1:8000/v1/documents/upload
+Content-Type: multipart/form-data; boundary=----boundary
+
+------boundary
+Content-Disposition: form-data; name="file"; filename="hello.txt"
+
+Hello RAG! This is a test document uploaded via the API.
+It will be automatically parsed, chunked, and indexed with BGE-M3.
+
+------boundary
+Content-Disposition: form-data; name="collection"
+
+default
+------boundary--

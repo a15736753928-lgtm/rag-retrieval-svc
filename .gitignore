@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Storage (Milvus Lite data, BM25 cache, etc.)
+storage/
+!storage/.gitkeep
+
+# Model cache
+storage/cache/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+
+# HF Hub cache
+.huggingface/

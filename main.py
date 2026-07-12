@@ -366,11 +366,18 @@ async def get_document_file(
     except Exception:
         return JSONResponse({"code": 404, "message": "文件读取失败", "data": None}, status_code=404)
 
+    from urllib.parse import quote
+
     filename = doc.get("file_name", "file")
+    # RFC 5987: 支持中文等非 ASCII 字符的 filename 编码
+    encoded = quote(filename, safe="")
     return StreamingResponse(
         BytesIO(data),
         media_type=content_type,
-        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+        headers={
+            "Content-Disposition": f"inline; filename*=UTF-8''{encoded}",
+            "Content-Type": content_type,
+        },
     )
 
 

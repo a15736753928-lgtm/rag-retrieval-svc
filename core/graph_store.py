@@ -3,6 +3,8 @@
 和 Milvus Lite 一样零运维，数据持久化到本地目录。
 节点: Entity（概念）+ Chunk（分片引用）
 边:   MENTIONS（实体→分片）+ RELATED（实体→实体）
+
+所有查询使用 $param 参数化，杜绝 Cypher 注入。
 """
 
 from __future__ import annotations
@@ -10,7 +12,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-from pathlib import Path
 
 import kuzu
 
@@ -47,7 +48,7 @@ def _create_schema(conn: kuzu.Connection):
                      "source_chunks STRING, kb_id STRING, "
                      "PRIMARY KEY(name))")
     except Exception:
-        pass  # 表已存在
+        pass
     try:
         conn.execute("CREATE NODE TABLE IF NOT EXISTS Chunk("
                      "chunk_id INT64, kb_id STRING, doc_id STRING, "
@@ -80,21 +81,18 @@ def upsert_entity(
     """创建或更新实体节点。"""
     conn = _get_conn()
     chunks_json = json.dumps(source_chunk_ids, ensure_ascii=False)
-    # 先删后建，实现 upsert 语义
+    # 先删后建，实现 upsert
     try:
         conn.execute(
-            f"MATCH (e:Entity) WHERE e.name = '{_escape(name)}' DETACH DELETE e")
+            "MATCH (e:Entity) WHERE e.name = $name DETACH DELETE e",
+            {"name": name})
     except Exception:
         pass
-    # Kuzu 不支持 CREATE 中 $param 属性值，用 f-string 内联
-    # name/description 来自 LLM 输出，做基本转义
-    safe_name = _escape(name)
-    safe_type = _escape(entity_type)
-    safe_desc = _escape(description)
     conn.execute(
-        f"CREATE (e:Entity {{name: '{safe_name}', type: '{safe_type}', "
-        f"description: '{safe_desc}', source_chunks: '{chunks_json}', "
-        f"kb_id: '{_escape(kb_id)}'}})"
+        "CREATE (e:Entity {name: $name, type: $type, "
+        "description: $dsc, source_chunks: $chunks, kb_id: $kb_id})",
+        {"name": name, "type": entity_type, "dsc": description,
+         "chunks": chunks_json, "kb_id": kb_id},
     )
 
 
@@ -103,38 +101,33 @@ def upsert_chunk(chunk_id: int, kb_id: str, doc_id: str):
     conn = _get_conn()
     try:
         conn.execute(
-            f"MATCH (c:Chunk) WHERE c.chunk_id = {chunk_id} DETACH DELETE c")
+            "MATCH (c:Chunk) WHERE c.chunk_id = $id DETACH DELETE c",
+            {"id": chunk_id})
     except Exception:
         pass
     conn.execute(
-        f"CREATE (c:Chunk {{chunk_id: {chunk_id}, kb_id: '{_escape(kb_id)}', doc_id: '{_escape(doc_id)}'}})"
+        "CREATE (c:Chunk {chunk_id: $id, kb_id: $kb, doc_id: $doc})",
+        {"id": chunk_id, "kb": kb_id, "doc": doc_id},
     )
-
-
-def _escape(s: str) -> str:
-    """转义 Kuzu 字符串中的特殊字符（反斜杠 + 单引号）。"""
-    return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def link_entity_to_chunk(entity_name: str, chunk_id: int):
     """创建 MENTIONS 边：实体 → 分片。"""
     conn = _get_conn()
-    safe_name = _escape(entity_name)
-    # 删除旧边
     try:
         conn.execute(
-            f"MATCH (e:Entity)-[r:MENTIONS]->(c:Chunk) "
-            f"WHERE e.name = '{safe_name}' AND c.chunk_id = {chunk_id} "
-            "DELETE r"
+            "MATCH (e:Entity)-[r:MENTIONS]->(c:Chunk) "
+            "WHERE e.name = $name AND c.chunk_id = $cid DELETE r",
+            {"name": entity_name, "cid": chunk_id},
         )
     except Exception:
         pass
-    # 创建新边
     try:
         conn.execute(
-            f"MATCH (e:Entity), (c:Chunk) "
-            f"WHERE e.name = '{safe_name}' AND c.chunk_id = {chunk_id} "
-            "CREATE (e)-[:MENTIONS]->(c)"
+            "MATCH (e:Entity), (c:Chunk) "
+            "WHERE e.name = $name AND c.chunk_id = $cid "
+            "CREATE (e)-[:MENTIONS]->(c)",
+            {"name": entity_name, "cid": chunk_id},
         )
     except Exception:
         logger.debug("MENTIONS 边创建失败: %s → chunk_%s", entity_name, chunk_id)
@@ -143,22 +136,20 @@ def link_entity_to_chunk(entity_name: str, chunk_id: int):
 def upsert_relation(from_entity: str, to_entity: str, relation_type: str):
     """创建或更新实体间关系边。"""
     conn = _get_conn()
-    safe_from = _escape(from_entity)
-    safe_to = _escape(to_entity)
-    safe_rel = _escape(relation_type)
     try:
         conn.execute(
-            f"MATCH (a:Entity)-[r:RELATED]->(b:Entity) "
-            f"WHERE a.name = '{safe_from}' AND b.name = '{safe_to}' "
-            "DELETE r"
+            "MATCH (a:Entity)-[r:RELATED]->(b:Entity) "
+            "WHERE a.name = $from AND b.name = $to DELETE r",
+            {"from": from_entity, "to": to_entity},
         )
     except Exception:
         pass
     try:
         conn.execute(
-            f"MATCH (a:Entity), (b:Entity) "
-            f"WHERE a.name = '{safe_from}' AND b.name = '{safe_to}' "
-            f"CREATE (a)-[:RELATED {{relation_type: '{safe_rel}'}}]->(b)"
+            "MATCH (a:Entity), (b:Entity) "
+            "WHERE a.name = $from AND b.name = $to "
+            "CREATE (a)-[:RELATED {relation_type: $rel}]->(b)",
+            {"from": from_entity, "to": to_entity, "rel": relation_type},
         )
     except Exception:
         logger.debug("RELATED 边创建失败: %s → %s", from_entity, to_entity)
@@ -180,14 +171,23 @@ def query_entities(query_terms: list[str], kb_id: str = "", top_k: int = 10) -> 
             continue
         seen.add(term_clean)
 
-        kb_filter = f"e.kb_id = '{_escape(kb_id)}' AND " if kb_id else ""
         try:
-            rows = conn.execute(
-                f"MATCH (e:Entity) WHERE {kb_filter} "
-                f"CONTAINS(LOWER(e.name), LOWER('{_escape(term_clean)}')) "
-                "RETURN e.name, e.type, e.description, e.source_chunks "
-                f"LIMIT {top_k}"
-            )
+            if kb_id:
+                rows = conn.execute(
+                    "MATCH (e:Entity) WHERE e.kb_id = $kb AND "
+                    "CONTAINS(LOWER(e.name), LOWER($term)) "
+                    "RETURN e.name, e.type, e.description, e.source_chunks "
+                    f"LIMIT {top_k}",
+                    {"kb": kb_id, "term": term_clean},
+                )
+            else:
+                rows = conn.execute(
+                    "MATCH (e:Entity) WHERE "
+                    "CONTAINS(LOWER(e.name), LOWER($term)) "
+                    "RETURN e.name, e.type, e.description, e.source_chunks "
+                    f"LIMIT {top_k}",
+                    {"term": term_clean},
+                )
             while rows.has_next():
                 row = rows.get_next()
                 results.append({
@@ -214,26 +214,41 @@ def expand_from_entities(
     related_entities: list[dict] = []
 
     for name in entity_names:
-        safe_name = _escape(name)
-        kb_filter = f"e.kb_id = '{_escape(kb_id)}' AND " if kb_id else ""
         try:
             # 1-跳: Entity → MENTIONS → Chunk
-            where_clause = f"e.kb_id = '{_escape(kb_id)}' AND e.name = '{safe_name}'" if kb_id else f"e.name = '{safe_name}'"
-            rows = conn.execute(
-                f"MATCH (e:Entity)-[:MENTIONS]->(c:Chunk) "
-                f"WHERE {where_clause} "
-                "RETURN c.chunk_id"
-            )
+            if kb_id:
+                rows = conn.execute(
+                    "MATCH (e:Entity)-[:MENTIONS]->(c:Chunk) "
+                    "WHERE e.kb_id = $kb AND e.name = $name "
+                    "RETURN c.chunk_id",
+                    {"kb": kb_id, "name": name},
+                )
+            else:
+                rows = conn.execute(
+                    "MATCH (e:Entity)-[:MENTIONS]->(c:Chunk) "
+                    "WHERE e.name = $name "
+                    "RETURN c.chunk_id",
+                    {"name": name},
+                )
             while rows.has_next():
                 chunk_ids.add(rows.get_next()[0])
 
             # N-跳: Entity → RELATED → Entity
             if hops > 1:
-                related = conn.execute(
-                    f"MATCH (e:Entity)-[:RELATED*1..{hops}]->(r:Entity) "
-                    f"WHERE {where_clause} "
-                    "RETURN r.name, r.type, r.description"
-                )
+                if kb_id:
+                    related = conn.execute(
+                        f"MATCH (e:Entity)-[:RELATED*1..{hops}]->(r:Entity) "
+                        "WHERE e.kb_id = $kb AND e.name = $name "
+                        "RETURN r.name, r.type, r.description",
+                        {"kb": kb_id, "name": name},
+                    )
+                else:
+                    related = conn.execute(
+                        f"MATCH (e:Entity)-[:RELATED*1..{hops}]->(r:Entity) "
+                        "WHERE e.name = $name "
+                        "RETURN r.name, r.type, r.description",
+                        {"name": name},
+                    )
                 while related.has_next():
                     row = related.get_next()
                     related_entities.append({
@@ -251,8 +266,9 @@ def get_all_entities_for_kb(kb_id: str) -> list[dict]:
     results: list[dict] = []
     try:
         rows = conn.execute(
-            f"MATCH (e:Entity) WHERE e.kb_id = '{_escape(kb_id)}' "
-            "RETURN e.name, e.type, e.description, e.source_chunks"
+            "MATCH (e:Entity) WHERE e.kb_id = $kb "
+            "RETURN e.name, e.type, e.description, e.source_chunks",
+            {"kb": kb_id},
         )
         while rows.has_next():
             row = rows.get_next()
@@ -270,11 +286,11 @@ def get_all_relations_for_kb(kb_id: str) -> list[dict]:
     conn = _get_conn()
     results: list[dict] = []
     try:
-        # 找到该 kb 下的所有实体对之间的 RELATED 边
         rows = conn.execute(
-            f"MATCH (a:Entity)-[r:RELATED]->(b:Entity) "
-            f"WHERE a.kb_id = '{_escape(kb_id)}' AND b.kb_id = '{_escape(kb_id)}' "
-            "RETURN a.name, b.name, r.relation_type"
+            "MATCH (a:Entity)-[r:RELATED]->(b:Entity) "
+            "WHERE a.kb_id = $kb AND b.kb_id = $kb "
+            "RETURN a.name, b.name, r.relation_type",
+            {"kb": kb_id},
         )
         while rows.has_next():
             row = rows.get_next()
@@ -288,7 +304,7 @@ def clear_kb(kb_id: str):
     """删除知识库下所有实体节点和 Chunk 节点。"""
     conn = _get_conn()
     try:
-        conn.execute(f"MATCH (e:Entity) WHERE e.kb_id = '{_escape(kb_id)}' DETACH DELETE e")
-        conn.execute(f"MATCH (c:Chunk) WHERE c.kb_id = '{_escape(kb_id)}' DELETE c")
+        conn.execute("MATCH (e:Entity) WHERE e.kb_id = $kb DETACH DELETE e", {"kb": kb_id})
+        conn.execute("MATCH (c:Chunk) WHERE c.kb_id = $kb DELETE c", {"kb": kb_id})
     except Exception as e:
         logger.warning("清理图数据失败: %s", e)

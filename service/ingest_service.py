@@ -13,6 +13,7 @@ from pathlib import Path
 
 from config import settings
 from db import models as dao
+from document_ingest.cleaner import clean_document
 from document_ingest.parser import is_supported, parse_bytes
 from core.model_loader import get_bge_m3
 from document_ingest.splitter import make_entities, split_text_semantic
@@ -117,9 +118,18 @@ def _run_ingest(
             _fail(task_id, doc_id, kb_id, "文件内容为空")
             return
 
+        # ── 清洗 ─────────────────────────────────────────────
+        dao.update_upload_task(task_id, progress=15, message="正在清洗文本...")
+        file_type_clean = Path(filename).suffix.lower().lstrip(".")
+        cleaned_text = clean_document(raw_text, file_type=file_type_clean)
+        if not cleaned_text.strip():
+            _fail(task_id, doc_id, kb_id, "清洗后文本为空")
+            return
+        logger.debug("清洗完成: %s, %d → %d 字符", filename, len(raw_text), len(cleaned_text))
+
         # ── 分片 ─────────────────────────────────────────────
         dao.update_upload_task(task_id, status="parsing", progress=30, message="正在文本分片...")
-        chunks = split_text_semantic(raw_text, get_bge_m3(), chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        chunks = split_text_semantic(cleaned_text, get_bge_m3(), chunk_size=chunk_size, chunk_overlap=chunk_overlap)
         if not chunks:
             _fail(task_id, doc_id, kb_id, "分片结果为空")
             return

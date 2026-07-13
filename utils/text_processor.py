@@ -6,6 +6,59 @@ import re
 import unicodedata
 
 
+# 全角 ASCII → 半角映射（与 cleaner.py 保持一致）
+_FULLWIDTH_START = 0xFF01
+_FULLWIDTH_END = 0xFF5E
+_HALFWIDTH_START = 0x21
+_FULLWIDTH_OFFSET = _FULLWIDTH_START - _HALFWIDTH_START
+
+_FULLWIDTH_EXTRAS: dict[int, int] = {0x3000: 0x20}
+
+_CJK_PUNCT_MAP = str.maketrans({
+    "‘": "'", "’": "'",   # ' '
+    "“": '"', "”": '"',   # " "
+    "（": "(", "）": ")",   # （ ）
+    "，": ",", "；": ";",   # ， ；
+    "：": ":",                   # ：
+})
+
+
+def normalize_query(text: str) -> str:
+    """规范化查询文本：NFC + 全角→半角 + 中文标点→英文 + 空白折叠。
+
+    确保查询与经过文档清洗管道处理后的文本使用相同的 Unicode 规范化，
+    避免因全角/半角字符差异导致的检索失配。
+
+    与 document_ingest/cleaner.py 中 normalize_unicode + normalize_fullwidth
+    的逻辑完全一致。
+    """
+    if not text:
+        return text
+
+    # 1. NFC 规范化（与 normalize_unicode 一致）
+    text = unicodedata.normalize("NFC", text)
+    text = re.sub(r"[‎‏­­]", "", text)
+    text = re.sub(r"[​‌‍﻿⁠]", "", text)
+
+    # 2. 全角 → 半角（与 normalize_fullwidth 一致）
+    result: list[str] = []
+    for ch in text:
+        cp = ord(ch)
+        if cp in _FULLWIDTH_EXTRAS:
+            result.append(chr(_FULLWIDTH_EXTRAS[cp]))
+        elif _FULLWIDTH_START <= cp <= _FULLWIDTH_END:
+            result.append(chr(cp - _FULLWIDTH_OFFSET))
+        else:
+            result.append(ch)
+    text = "".join(result)
+    text = text.translate(_CJK_PUNCT_MAP)
+
+    # 3. 空白折叠
+    text = re.sub(r"\s+", " ", text).strip()
+
+    return text
+
+
 def clean_text(text: str, *, strip_control: bool = True, normalize_space: bool = True) -> str:
     """清洗文本：去除控制字符 + 合并多余空白。
 

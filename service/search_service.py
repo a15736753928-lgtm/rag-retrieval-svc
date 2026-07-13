@@ -13,6 +13,7 @@ from milvus_client import vector_crud as vc
 from rerank.bge_reranker import rerank as do_rerank
 from schemas import HighlightSpan, SearchQueryRequest, SearchResultItem
 from service import graph_search_service as graph_svc
+from utils.text_processor import normalize_query
 
 logger = logging.getLogger(__name__)
 
@@ -45,17 +46,20 @@ async def search(req: SearchQueryRequest) -> list[SearchResultItem]:
     for kb in kbs:
         kb_name_map[kb["id"]] = kb["name"]
 
+    # ── 0. 查询规范化 ───────────────────────────────────────
+    query = normalize_query(req.query)
+
     # ── 1. 稠密召回 ─────────────────────────────────────────
-    query_dense = encode_query_dense(req.query)
+    query_dense = encode_query_dense(query)
     dense_hits = vc.search_dense(query_dense, top_k=rerank_top_k, expr=kb_filter)
 
     # ── 2. 稀疏召回 ─────────────────────────────────────────
-    query_sparse = encode_query_sparse(req.query)
+    query_sparse = encode_query_sparse(query)
     sparse_hits = vc.search_sparse(query_sparse, top_k=rerank_top_k, expr=kb_filter)
 
     # ── 3. 图召回 ─────────────────────────────────────────
     graph_result = await graph_svc.graph_search(
-        req.query, kb_ids=req.kb_ids, top_k=rerank_top_k,
+        query, kb_ids=req.kb_ids, top_k=rerank_top_k,
     )
     graph_hits = graph_result["chunk_hits"]
     community_map: dict[int, dict] = {}
@@ -86,10 +90,30 @@ async def search(req: SearchQueryRequest) -> list[SearchResultItem]:
         # 去掉 PG 里也没文本的结果
         fused = [r for r in fused if r.get("chunk_text", "").strip()]
 
+    # ── 3.6 回退策略：三路召回都为空时，放宽稠密召回 ─────────
+    if not fused:
+        logger.info("主检索返回空结果，尝试回退（稠密召回 ×2 放宽）: query=%r", query[:50])
+        fallback_top_k = min(rerank_top_k * 2, settings.max_search_recall)
+        dense_fallback = vc.search_dense(query_dense, top_k=fallback_top_k, expr=kb_filter)
+        if dense_fallback:
+            fb_ids = [r["id"] for r in dense_fallback]
+            fb_chunk_map = dao.get_chunks_by_milvus_pks(fb_ids)
+            for r in dense_fallback:
+                ch = fb_chunk_map.get(r["id"])
+                if ch and ch.get("chunk_text", "").strip():
+                    r["chunk_text"] = ch["chunk_text"]
+                    r["chunk_index"] = ch.get("chunk_index", 0)
+                    r["file_name"] = ch.get("file_name", "")
+                    r["kb_id"] = ch.get("kb_id", r.get("kb_id", ""))
+                    r.setdefault("_source", "vector")
+                    fused.append(r)
+        if not fused:
+            logger.warning("所有检索路径均无结果: query=%r", query[:50])
+
     # ── 4. Rerank ──────────────────────────────────────────
     if fused:
         texts = [r.get("chunk_text", "") for r in fused]
-        reranked = do_rerank(req.query, texts, len(texts) if final_limit is None else final_limit)
+        reranked = do_rerank(query, texts, len(texts) if final_limit is None else final_limit)
         fused = [fused[idx] for idx, _ in reranked]
         for i, (_, score) in enumerate(reranked):
             if i < len(fused):
@@ -103,7 +127,7 @@ async def search(req: SearchQueryRequest) -> list[SearchResultItem]:
         if similarity < min_sim:
             continue
         content = r.get("chunk_text", "")
-        highlights = _extract_highlight_terms(req.query, content)
+        highlights = _extract_highlight_terms(query, content)
         kb_id = r.get("kb_id", "")
 
         milvus_id = r.get("id", 0)
@@ -126,7 +150,7 @@ async def search(req: SearchQueryRequest) -> list[SearchResultItem]:
 
     took = (time.perf_counter() - start) * 1000
     kb_info = req.kb_ids if req.kb_ids else "(all)"
-    logger.info("检索 kb=%s query=%r → %d results (%.1fms)", kb_info, req.query[:30], len(results), took)
+    logger.info("检索 kb=%s query=%r → %d results (%.1fms)", kb_info, query[:30], len(results), took)
     return results
 
 
@@ -157,7 +181,7 @@ async def get_chunk_content(chunk_id: int, query: str = "") -> dict | None:
 
 def _rrf_fuse(dense, sparse, graph, top_k, dense_w, sparse_w) -> list[dict]:
     k = settings.rrf_k
-    graph_w = 0.15  # 图召回权重
+    graph_w = 0.25  # 图召回权重（基于实体重叠率评分）
     score_map: dict[int, dict] = {}
     for rank, r in enumerate(dense):
         score_map[r["id"]] = {"hit": r, "score": dense_w / (k + rank + 1)}

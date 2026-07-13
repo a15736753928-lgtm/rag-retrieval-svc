@@ -46,35 +46,40 @@ async def graph_search(
     logger.debug("查询实体: %s", query_entities)
 
     # ── 2. Kuzu 模糊匹配实体 + N-hop 扩展 ────────────────────────
-    all_chunk_ids: set[int] = set()
+    #  逐实体扩展，记录每个 chunk 被多少个查询实体命中 → 实体重叠率评分
+    chunk_entity_hits: dict[int, int] = {}
 
-    for kb_id in (kb_ids or []):
-        # 模糊匹配实体
-        matched = query_entities
+    for name in query_entities:
+        for kb_id in (kb_ids or []):
+            expanded = expand_from_entities([name], hops=1, kb_id=kb_id)
+            for cid in expanded.get("chunk_ids", []):
+                chunk_entity_hits[cid] = chunk_entity_hits.get(cid, 0) + 1
 
-        # 扩展获取关联 chunk
-        expanded = expand_from_entities(matched, hops=1, kb_id=kb_id)
-        all_chunk_ids.update(expanded.get("chunk_ids", []))
+        if not kb_ids:
+            expanded = expand_from_entities([name], hops=1)
+            for cid in expanded.get("chunk_ids", []):
+                chunk_entity_hits[cid] = chunk_entity_hits.get(cid, 0) + 1
 
-    if not kb_ids:
-        # 无 kb 过滤时，全局搜索
-        expanded = expand_from_entities(query_entities, hops=1)
-        all_chunk_ids.update(expanded.get("chunk_ids", []))
-
-    # ── 3. 构建 chunk_hits（转换为 dense/sparse 兼容格式）────────
-    # 图召回的 chunk 没有相似度分数，给一个默认排名分
-    for idx, pk in enumerate(sorted(all_chunk_ids)[:top_k]):
+    # ── 3. 构建 chunk_hits（实体重叠率评分）──────────────────────
+    total_query_entities = len(query_entities) or 1
+    ranked_chunks = sorted(
+        chunk_entity_hits.items(), key=lambda x: x[1], reverse=True
+    )[:top_k]
+    for pk, hit_count in ranked_chunks:
+        # 实体重叠率 = 命中该 chunk 的查询实体数 / 查询实体总数
+        score = round(min(hit_count / total_query_entities, 1.0), 4)
         result["chunk_hits"].append({
             "id": pk,
-            "distance": 0.5 + (1.0 / (idx + 2)),  # 伪分数，排在向量结果中间
+            "distance": score,
             "kb_id": "",
             "_source": "graph",
         })
 
     # ── 4. 查找相关社区摘要 ─────────────────────────────────────
-    if all_chunk_ids:
+    if chunk_entity_hits:
         try:
-            communities = get_communities_by_chunk_pks(list(all_chunk_ids)[:top_k])
+            chunk_ids_for_community = [pk for pk, _ in ranked_chunks]
+            communities = get_communities_by_chunk_pks(chunk_ids_for_community)
             result["community_summaries"] = communities
         except Exception as e:
             logger.warning("社区摘要查询失败: %s", e)

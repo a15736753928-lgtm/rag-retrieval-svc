@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     default_top_k: int = 10
     search_ef: int = 64
     rrf_k: int = 60
-    max_search_recall: int = 100000
+    max_search_recall: int = 5000
 
     # ── 入库配置 ───────────────────────────────────────────────────────
     ingest_batch_size: int = 64

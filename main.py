@@ -103,6 +103,10 @@ async def startup():
     auth_svc._ensure_defaults()
     coll_crud.init()
 
+    # GPU 强制校验 —— 不通过则退出，拒绝 CPU 降级
+    from core.model_loader import validate_gpu
+    validate_gpu()
+
     # 同步加载模型 —— 确保完成后才对外服务
     from core.model_loader import get_bge_m3, get_reranker
     get_bge_m3()

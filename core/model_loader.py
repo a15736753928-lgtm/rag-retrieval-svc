@@ -4,11 +4,14 @@
   - 推理速度约为 FP32 的 2×
   - 内存占用约为 FP32 的 1/4
   - 同时输出 dense / sparse / ColBERT 三种向量
+
+所有模型强制 GPU 加载 —— 不提供 CPU 降级，GPU 不可用时直接报错退出。
 """
 
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 from collections import defaultdict
 
@@ -22,8 +25,61 @@ infer_lock = threading.Lock()
 
 
 # ═══════════════════════════════════════════════════════════════
+#  GPU 校验 —— 启动时调用，失败即退出
+# ═══════════════════════════════════════════════════════════════
+
+_gpu_validated = False
+
+
+def validate_gpu():
+    """强制校验 GPU 可用性，不通过则立即退出进程。"""
+    global _gpu_validated
+    if _gpu_validated:
+        return
+
+    # 1. PyTorch CUDA
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            logger.critical("GPU 校验失败: PyTorch CUDA 不可用")
+            sys.exit(1)
+        gpu_name = torch.cuda.get_device_name(0)
+        logger.info("GPU 校验通过 (PyTorch): %s", gpu_name)
+    except ImportError:
+        logger.critical("GPU 校验失败: PyTorch 未安装")
+        sys.exit(1)
+
+    # 2. ONNX Runtime CUDA
+    try:
+        import onnxruntime as ort
+        providers = ort.get_available_providers()
+        if "CUDAExecutionProvider" not in providers:
+            logger.critical("GPU 校验失败: ONNX Runtime 缺少 CUDAExecutionProvider (当前: %s)", providers)
+            sys.exit(1)
+        logger.info("GPU 校验通过 (ONNX Runtime): providers=%s", providers)
+    except ImportError:
+        logger.critical("GPU 校验失败: onnxruntime 未安装")
+        sys.exit(1)
+
+    _gpu_validated = True
+
+
+# ═══════════════════════════════════════════════════════════════
 #  BGE-M3 ONNX 封装
 # ═══════════════════════════════════════════════════════════════
+
+class _OnnxSession:
+    """薄封装 onnxruntime.InferenceSession，暴露 ORTModelForCustomTasks 兼容的 __call__ 接口。"""
+
+    def __init__(self, session):
+        self._session = session
+        self._valid_inputs = {inp.name for inp in session.get_inputs()}
+        self._output_names = [out.name for out in session.get_outputs()]
+
+    def __call__(self, **inputs):
+        feed = {k: v for k, v in inputs.items() if k in self._valid_inputs}
+        return self._session.run(self._output_names, feed)
+
 
 class BgeM3Onnx:
     """BGE-M3 ONNX INT8 封装，提供与 SentenceTransformer 兼容的 encode() 接口。"""
@@ -132,18 +188,27 @@ def get_bge_m3() -> BgeM3Onnx:
         if _bge_m3 is not None:
             return _bge_m3
 
-        from optimum.onnxruntime import ORTModelForCustomTasks
+        import onnxruntime as ort
+        from huggingface_hub import hf_hub_download
         from transformers import AutoTokenizer
 
         onnx_model_name = getattr(settings, "bge_onnx_model_name", "gpahal/bge-m3-onnx-int8")
 
-        logger.info("正在加载 BGE-M3 ONNX INT8 ... model=%s", onnx_model_name)
-        tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")
-        ort_model = ORTModelForCustomTasks.from_pretrained(
-            onnx_model_name, file_name="model_quantized.onnx"
+        logger.info("正在加载 BGE-M3 ONNX INT8 (GPU) ... model=%s", onnx_model_name)
+
+        model_path = hf_hub_download(
+            repo_id=onnx_model_name,
+            filename="model_quantized.onnx",
+            cache_dir=settings.embedding_cache_dir,
         )
-        _bge_m3 = BgeM3Onnx(tokenizer, ort_model)
-        logger.info("BGE-M3 ONNX INT8 加载完成 (dim=1024)")
+
+        session = ort.InferenceSession(
+            model_path,
+            providers=["CUDAExecutionProvider"],
+        )
+        tokenizer = AutoTokenizer.from_pretrained("BAAI/bge-m3")
+        _bge_m3 = BgeM3Onnx(tokenizer, _OnnxSession(session))
+        logger.info("BGE-M3 ONNX INT8 加载完成 (GPU, dim=1024)")
         return _bge_m3
 
 
@@ -163,13 +228,13 @@ def get_reranker():
         if _reranker is not None:
             return _reranker
         from sentence_transformers import CrossEncoder
-        logger.info("正在加载 BGE-Reranker ... device=%s", settings.device)
+        logger.info("正在加载 BGE-Reranker (GPU) ...")
         _reranker = CrossEncoder(
             settings.reranker_model_name,
-            device=settings.device,
+            device="cuda",
             trust_remote_code=True,
         )
-        logger.info("BGE-Reranker 加载完成")
+        logger.info("BGE-Reranker 加载完成 (GPU)")
         return _reranker
 
 

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from pydantic_settings import BaseSettings
 
 
@@ -22,7 +25,6 @@ class Settings(BaseSettings):
     bge_model_name: str = "BAAI/bge-m3"
     bge_onnx_model_name: str = "gpahal/bge-m3-onnx-int8"
     reranker_model_name: str = "BAAI/bge-reranker-v2-m3"
-    device: str = "cpu"
     embedding_cache_dir: str = "storage/cache"
 
     # ── 向量配置 ───────────────────────────────────────────────────────

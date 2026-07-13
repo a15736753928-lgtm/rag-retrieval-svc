@@ -8,6 +8,8 @@ dependencies = [
     "uvicorn[standard]>=0.51.0",
     "pydantic-settings>=2.0.0",
     "numpy>=1.26.0",
+    "torch>=2.6.0",
+    "torchvision>=0.21.0",
     "sentence-transformers>=3.0.0",
     "pymilvus>=2.4.0",
     "pdf-oxide>=0.3.0",
@@ -17,9 +19,13 @@ dependencies = [
     "python-docx>=1.1.0",
     "llama-index-core>=0.12.0",
     "llama-index-embeddings-huggingface>=0.3.0",
-    "optimum[onnxruntime]>=1.20.0",
+    "onnxruntime-gpu>=1.20.0",
     "psycopg2-binary>=2.9.0",
     "minio>=7.0.0",
+    "python-multipart>=0.0.32",
+    "bcrypt>=5.0.0",
+    "pyjwt>=2.13.0",
+    "milvus-lite>=3.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +44,20 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 
+[tool.uv.sources]
+torch = { index = "pytorch-cu124" }
+torchvision = { index = "pytorch-cu124" }
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[[tool.uv.index]]
+name = "pytorch-cu124"
+url = "https://download.pytorch.org/whl/cu124"
+explicit = true
+
+[[tool.uv.index]]
+name = "tsinghua"
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true

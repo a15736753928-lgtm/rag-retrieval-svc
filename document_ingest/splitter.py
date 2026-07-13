@@ -122,7 +122,8 @@ def split_text_semantic(
     min_chunk_size: int = 40,
     strip_whitespace: bool = True,
 ) -> list[str]:
-    """按语义边界分片 —— 在 embedding 相似度低谷处切割，不破坏主题连贯性。
+    """按语义边界分片 —— 在 embedding 相似度低谷处切割，然后为每个切片
+    追加前一个切片尾部作为上下文桥接，保证跨 chunk 检索时的连贯性。
 
     model: SentenceTransformer 实例（如 BGE-M3），内部自动适配为 LlamaIndex 接口。
     适合长文档、跨段落主题切换频繁的内容。
@@ -160,7 +161,13 @@ def split_text_semantic(
             else:
                 sub_nodes = fallback.get_nodes_from_documents([LlamaDocument(text=ch)])
                 trimmed.extend([n.get_content() for n in sub_nodes])
-        return trimmed
+        chunks = trimmed
+
+    # 上下文桥接：语义分片天然无 overlap，此处为每个 chunk 拼接前一个
+    # chunk 的尾部文本，保证相邻 chunk 之间有 50~100 字的上下文关联
+    overlap = chunk_overlap or settings.chunk_overlap
+    if overlap > 0 and len(chunks) > 1:
+        chunks = _bridge_context(chunks, overlap)
 
     return chunks
 
@@ -183,6 +190,83 @@ def _merge_short_chunks(chunks: list[str], min_size: int) -> list[str]:
         merged = merged[1:]
 
     return merged
+
+
+def _bridge_context(chunks: list[str], overlap: int, separator: str = "\n") -> list[str]:
+    """为每个语义 chunk 拼接前一个 chunk 的尾部作为上下文桥接。
+
+    在 overlap 位置附近寻找最近的句末标点（。！？.!?），从它之后开始
+    截取，保证桥接文本以完整句子开头。前后搜索范围各为 overlap 的 50%，
+    优先选择使桥接文本更接近 overlap 大小的边界。找不到边界时退化为固定字数截取。
+
+    注意：拼接的是前一个 chunk 的原始文本（不含它自己的桥接前缀），
+    避免桥接文本逐级膨胀。
+    """
+    import re
+
+    _SENT_BOUNDARY = re.compile(r"[。！？.!?]\s*")
+
+    if overlap <= 0 or len(chunks) <= 1:
+        return chunks
+
+    result = [chunks[0]]
+    for i in range(1, len(chunks)):
+        prev = chunks[i - 1]
+
+        if len(prev) <= overlap:
+            bridge = prev
+        else:
+            bridge = _extract_bridge(prev, overlap, _SENT_BOUNDARY)
+
+        result.append(bridge + separator + chunks[i])
+
+    return result
+
+
+def _extract_bridge(
+    text: str,
+    target_size: int,
+    boundary_re: re.Pattern,
+) -> str:
+    """从文本尾部截取约 target_size 字，起始位置对齐到句子边界。
+
+    算法：以 len(text) - target_size 为理想起点，向前后各搜寻
+    target_size // 2 的范围，找到最近的句末标点，从其之后开始截。
+    优先选择桥接长度更接近 target_size 的边界。
+    """
+    ideal_cut = len(text) - target_size
+    margin = max(target_size // 2, 20)
+
+    # 收集理想位置前后的所有句子边界
+    search_start = max(0, ideal_cut - margin)
+    search_end = min(len(text), ideal_cut + margin)
+    search_region = text[search_start:search_end]
+
+    candidates: list[int] = []  # 候选位置（相对 search_start 的偏移）
+    for m in boundary_re.finditer(search_region):
+        candidates.append(m.end())
+
+    if not candidates:
+        return text[-target_size:]  # 无奈退化为固定字数
+
+    # 找最接近 ideal_cut 的边界位置，但排除位于文本最末尾的（截出来为空）
+    best_offset = None
+    best_dist = float("inf")
+    for offset in candidates:
+        abs_cut = search_start + offset
+        # 跳过文本末尾 —— bridge 不能为空
+        if abs_cut >= len(text) - 1:
+            continue
+        dist = abs(abs_cut - ideal_cut)
+        if dist < best_dist:
+            best_dist = dist
+            best_offset = offset
+
+    if best_offset is None:
+        return text[-target_size:]  # 只有末尾边界，退化为固定字数
+
+    abs_cut = search_start + best_offset
+    return text[abs_cut:]
 
 
 def make_entities(

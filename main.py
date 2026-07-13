@@ -116,6 +116,8 @@ async def startup():
         logger.warning("DeepSeek API 连通性校验失败（不影响启动）: %s", e)
 
     # 同步加载模型 —— 确保完成后才对外服务
+    from core.graph_store import init_graph
+    init_graph()
     from core.model_loader import get_bge_m3, get_reranker
     get_bge_m3()
     logger.info("BGE-M3 加载完成")

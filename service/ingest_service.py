@@ -14,6 +14,7 @@ from pathlib import Path
 from config import settings
 from db import models as dao
 from document_ingest.cleaner import clean_document
+from document_ingest.graph_indexer import index_chunks_to_graph
 from document_ingest.parser import is_supported, parse_bytes
 from core.model_loader import get_bge_m3
 from document_ingest.splitter import make_entities, split_text_semantic
@@ -167,6 +168,17 @@ def _run_ingest(
         except Exception as e:
             logger.warning("PG chunks 写入失败（不影响检索）: %s", e)
 
+        # ── 图索引（后台异步，不影响主入库）─────────────────────
+        try:
+            thread_graph = threading.Thread(
+                target=_run_graph_index,
+                args=(doc_id, kb_id, chunks, ids),
+                daemon=True,
+            )
+            thread_graph.start()
+        except Exception as e:
+            logger.warning("图索引线程启动失败（不影响入库）: %s", e)
+
         # ── 完成 ────────────────────────────────────────────
         took_ms = round((time.perf_counter() - start) * 1000, 2)
         now_ms = int(time.time() * 1000)
@@ -178,6 +190,33 @@ def _run_ingest(
     except Exception as e:
         logger.exception("入库任务异常: task_id=%s", task_id)
         _fail(task_id, doc_id, kb_id, f"系统异常: {e}")
+
+
+def _run_graph_index(
+    doc_id: str,
+    kb_id: str,
+    chunks: list[str],
+    milvus_pks: list[int],
+):
+    """后台线程：实体/关系抽取 → 图写入 → 社区发现 → 摘要生成。"""
+    try:
+        # 1. 实体抽取 + 关系发现 → 写入 Kuzu
+        index_chunks_to_graph(
+            chunks=chunks,
+            chunk_pks=milvus_pks,
+            kb_id=kb_id,
+            doc_id=doc_id,
+        )
+    except Exception as e:
+        logger.exception("图索引失败: doc=%s", doc_id)
+        return
+
+    # 2. 社区发现 + 摘要（每次入库后增量重建该 KB 的社区）
+    try:
+        from document_ingest.community import build_communities
+        build_communities(kb_id)
+    except Exception as e:
+        logger.exception("社区发现失败: kb=%s", kb_id)
 
 
 def _fail(task_id: str, doc_id: str, kb_id: str, message: str):

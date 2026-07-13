@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from contextlib import contextmanager
 from typing import Any
@@ -386,3 +387,59 @@ def get_distribution() -> list[dict]:
             "GROUP BY kb.id ORDER BY doc_count DESC"
         )
         return _rows(cur)
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  communities（图社区）
+# ═══════════════════════════════════════════════════════════════════════
+
+def insert_communities(communities: list[dict]):
+    """批量插入社区记录。"""
+    now = int(time.time() * 1000)
+    with _get_db() as conn:
+        cur = conn.cursor()
+        for com in communities:
+            cur.execute(
+                "INSERT INTO communities (id, kb_id, name, summary, entity_ids, chunk_ids, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    com["id"],
+                    com["kb_id"],
+                    com.get("name", ""),
+                    com.get("summary", ""),
+                    json.dumps(com.get("entity_ids", []), ensure_ascii=False),
+                    json.dumps(com.get("chunk_ids", []), ensure_ascii=False),
+                    now,
+                ),
+            )
+
+
+def clear_communities(kb_id: str):
+    """删除知识库下所有社区记录。"""
+    with _get_db() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM communities WHERE kb_id = %s", (kb_id,))
+
+
+def get_communities_by_chunk_pks(chunk_pks: list[int]) -> list[dict]:
+    """根据 chunk 主键列表查找所属社区（用于检索时返回社区摘要）。"""
+    if not chunk_pks:
+        return []
+    with _get_db() as conn:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        results: list[dict] = []
+        seen: set[str] = set()
+        for pk in chunk_pks:
+            # PostgreSQL 的 JSON 包含查询
+            cur.execute(
+                "SELECT * FROM communities WHERE chunk_ids::jsonb @> %s::jsonb LIMIT 3",
+                (json.dumps([pk]),),
+            )
+            for row in cur.fetchall():
+                r = dict(row)
+                if r["id"] not in seen:
+                    seen.add(r["id"])
+                    r["entity_ids"] = json.loads(r["entity_ids"]) if isinstance(r["entity_ids"], str) else r["entity_ids"]
+                    r["chunk_ids"] = json.loads(r["chunk_ids"]) if isinstance(r["chunk_ids"], str) else r["chunk_ids"]
+                    results.append(r)
+        return results

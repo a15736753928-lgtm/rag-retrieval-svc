@@ -129,6 +129,19 @@ def _init_tables():
             "ON documents (kb_id, file_hash) WHERE file_hash != ''"
         )
 
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS communities (
+                id            TEXT PRIMARY KEY,
+                kb_id         TEXT NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,
+                name          VARCHAR(255) DEFAULT '',
+                summary       TEXT NOT NULL DEFAULT '',
+                entity_ids    TEXT DEFAULT '[]',
+                chunk_ids     TEXT DEFAULT '[]',
+                created_at    BIGINT NOT NULL
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_communities_kb_id ON communities(kb_id)")
+
         _init_done = True
         logger.info("PostgreSQL 表初始化完成")
     finally:

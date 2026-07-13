@@ -94,7 +94,7 @@ def upsert_entity(
     conn.execute(
         f"CREATE (e:Entity {{name: '{safe_name}', type: '{safe_type}', "
         f"description: '{safe_desc}', source_chunks: '{chunks_json}', "
-        f"kb_id: '{kb_id}'}})"
+        f"kb_id: '{_escape(kb_id)}'}})"
     )
 
 
@@ -107,13 +107,13 @@ def upsert_chunk(chunk_id: int, kb_id: str, doc_id: str):
     except Exception:
         pass
     conn.execute(
-        f"CREATE (c:Chunk {{chunk_id: {chunk_id}, kb_id: '{kb_id}', doc_id: '{doc_id}'}})"
+        f"CREATE (c:Chunk {{chunk_id: {chunk_id}, kb_id: '{_escape(kb_id)}', doc_id: '{_escape(doc_id)}'}})"
     )
 
 
 def _escape(s: str) -> str:
-    """转义 Kuzu 字符串中的单引号。"""
-    return s.replace("'", "''").replace("\\", "\\\\")
+    """转义 Kuzu 字符串中的特殊字符（反斜杠 + 单引号）。"""
+    return s.replace("\\", "\\\\").replace("'", "\\'")
 
 
 def link_entity_to_chunk(entity_name: str, chunk_id: int):
@@ -180,7 +180,7 @@ def query_entities(query_terms: list[str], kb_id: str = "", top_k: int = 10) -> 
             continue
         seen.add(term_clean)
 
-        kb_filter = f"e.kb_id = '{kb_id}' AND " if kb_id else ""
+        kb_filter = f"e.kb_id = '{_escape(kb_id)}' AND " if kb_id else ""
         try:
             rows = conn.execute(
                 f"MATCH (e:Entity) WHERE {kb_filter} "
@@ -215,10 +215,10 @@ def expand_from_entities(
 
     for name in entity_names:
         safe_name = _escape(name)
-        kb_filter = f"e.kb_id = '{kb_id}' AND " if kb_id else ""
+        kb_filter = f"e.kb_id = '{_escape(kb_id)}' AND " if kb_id else ""
         try:
             # 1-跳: Entity → MENTIONS → Chunk
-            where_clause = f"e.kb_id = '{kb_id}' AND e.name = '{safe_name}'" if kb_id else f"e.name = '{safe_name}'"
+            where_clause = f"e.kb_id = '{_escape(kb_id)}' AND e.name = '{safe_name}'" if kb_id else f"e.name = '{safe_name}'"
             rows = conn.execute(
                 f"MATCH (e:Entity)-[:MENTIONS]->(c:Chunk) "
                 f"WHERE {where_clause} "
@@ -251,7 +251,7 @@ def get_all_entities_for_kb(kb_id: str) -> list[dict]:
     results: list[dict] = []
     try:
         rows = conn.execute(
-            f"MATCH (e:Entity) WHERE e.kb_id = '{kb_id}' "
+            f"MATCH (e:Entity) WHERE e.kb_id = '{_escape(kb_id)}' "
             "RETURN e.name, e.type, e.description, e.source_chunks"
         )
         while rows.has_next():
@@ -273,7 +273,7 @@ def get_all_relations_for_kb(kb_id: str) -> list[dict]:
         # 找到该 kb 下的所有实体对之间的 RELATED 边
         rows = conn.execute(
             f"MATCH (a:Entity)-[r:RELATED]->(b:Entity) "
-            f"WHERE a.kb_id = '{kb_id}' AND b.kb_id = '{kb_id}' "
+            f"WHERE a.kb_id = '{_escape(kb_id)}' AND b.kb_id = '{_escape(kb_id)}' "
             "RETURN a.name, b.name, r.relation_type"
         )
         while rows.has_next():
@@ -288,7 +288,7 @@ def clear_kb(kb_id: str):
     """删除知识库下所有实体节点和 Chunk 节点。"""
     conn = _get_conn()
     try:
-        conn.execute(f"MATCH (e:Entity) WHERE e.kb_id = '{kb_id}' DETACH DELETE e")
-        conn.execute(f"MATCH (c:Chunk) WHERE c.kb_id = '{kb_id}' DELETE c")
+        conn.execute(f"MATCH (e:Entity) WHERE e.kb_id = '{_escape(kb_id)}' DETACH DELETE e")
+        conn.execute(f"MATCH (c:Chunk) WHERE c.kb_id = '{_escape(kb_id)}' DELETE c")
     except Exception as e:
         logger.warning("清理图数据失败: %s", e)

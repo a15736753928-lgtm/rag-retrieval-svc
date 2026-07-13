@@ -234,6 +234,9 @@ class SearchResultItem(BaseModel):
     chunk_index: int = 0
     similarity: float = 0.0
     highlights: list[str] = []
+    community_id: str = ""
+    community_name: str = ""
+    match_type: str = "vector"  # vector | graph | both
 
 
 # ═══════════════════════════════════════════════════════════════════════

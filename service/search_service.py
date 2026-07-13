@@ -12,6 +12,7 @@ from embedding.bge_encoder import encode_query_dense, encode_query_sparse
 from milvus_client import vector_crud as vc
 from rerank.bge_reranker import rerank as do_rerank
 from schemas import HighlightSpan, SearchQueryRequest, SearchResultItem
+from service import graph_search_service as graph_svc
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +53,18 @@ async def search(req: SearchQueryRequest) -> list[SearchResultItem]:
     query_sparse = encode_query_sparse(req.query)
     sparse_hits = vc.search_sparse(query_sparse, top_k=rerank_top_k, expr=kb_filter)
 
-    # ── 3. RRF 融合 ────────────────────────────────────────
-    fused = _rrf_fuse(dense_hits, sparse_hits, rerank_top_k, dense_weight, sparse_weight)
+    # ── 3. 图召回 ─────────────────────────────────────────
+    graph_result = await graph_svc.graph_search(
+        req.query, kb_ids=req.kb_ids, top_k=rerank_top_k,
+    )
+    graph_hits = graph_result["chunk_hits"]
+    community_map: dict[int, dict] = {}
+    for com in graph_result.get("community_summaries", []):
+        for pk in com.get("chunk_ids", []):
+            community_map[pk] = {"id": com["id"], "name": com["name"]}
+
+    # ── 4. RRF 三路融合 ────────────────────────────────────
+    fused = _rrf_fuse(dense_hits, sparse_hits, graph_hits, rerank_top_k, dense_weight, sparse_weight)
 
     # ── 3.5 PG 补全：用 Milvus ID 批量查 chunks + documents ──
     if fused:
@@ -95,8 +106,12 @@ async def search(req: SearchQueryRequest) -> list[SearchResultItem]:
         highlights = _extract_highlight_terms(req.query, content)
         kb_id = r.get("kb_id", "")
 
+        milvus_id = r.get("id", 0)
+        com_info = community_map.get(milvus_id, {})
+        match_type = r.get("_source", "vector")
+
         results.append(SearchResultItem(
-            id=str(r.get("id", "")),
+            id=str(milvus_id),
             content=content,
             file_name=r.get("file_name", ""),
             kb_id=kb_id,
@@ -104,6 +119,9 @@ async def search(req: SearchQueryRequest) -> list[SearchResultItem]:
             chunk_index=r.get("chunk_index", 0),
             similarity=similarity,
             highlights=highlights,
+            community_id=com_info.get("id", ""),
+            community_name=com_info.get("name", ""),
+            match_type=match_type,
         ))
 
     took = (time.perf_counter() - start) * 1000
@@ -137,8 +155,9 @@ async def get_chunk_content(chunk_id: int, query: str = "") -> dict | None:
 #  RRF 融合
 # ═══════════════════════════════════════════════════════════════════════
 
-def _rrf_fuse(dense, sparse, top_k, dense_w, sparse_w) -> list[dict]:
+def _rrf_fuse(dense, sparse, graph, top_k, dense_w, sparse_w) -> list[dict]:
     k = settings.rrf_k
+    graph_w = 0.15  # 图召回权重
     score_map: dict[int, dict] = {}
     for rank, r in enumerate(dense):
         score_map[r["id"]] = {"hit": r, "score": dense_w / (k + rank + 1)}
@@ -147,6 +166,12 @@ def _rrf_fuse(dense, sparse, top_k, dense_w, sparse_w) -> list[dict]:
             score_map[r["id"]]["score"] += sparse_w / (k + rank + 1)
         else:
             score_map[r["id"]] = {"hit": r, "score": sparse_w / (k + rank + 1)}
+    for rank, r in enumerate(graph):
+        if r["id"] in score_map:
+            score_map[r["id"]]["score"] += graph_w / (k + rank + 1)
+            score_map[r["id"]]["hit"]["_source"] = "both"
+        else:
+            score_map[r["id"]] = {"hit": r, "score": graph_w / (k + rank + 1)}
     ranked = sorted(score_map.values(), key=lambda x: x["score"], reverse=True)
     out = []
     for item in ranked[:top_k]:

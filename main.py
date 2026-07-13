@@ -107,6 +107,14 @@ async def startup():
     from core.model_loader import validate_gpu
     validate_gpu()
 
+    # DeepSeek API 连通性校验
+    from core.llm_client import generate
+    try:
+        test_resp = generate("ping", system="只回复 pong 一个词，不要其他内容", max_tokens=10)
+        logger.info("DeepSeek API 连通性校验通过 → %s", test_resp.strip())
+    except Exception as e:
+        logger.warning("DeepSeek API 连通性校验失败（不影响启动）: %s", e)
+
     # 同步加载模型 —— 确保完成后才对外服务
     from core.model_loader import get_bge_m3, get_reranker
     get_bge_m3()

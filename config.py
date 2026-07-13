@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     jwt_expire_hours: int = 24
     default_access_key: str = "123456"
 
+    # ── LLM（DeepSeek API，OpenAI 兼容）─────────────────────────────────
+    llm_api_base: str = "https://api.deepseek.com"
+    llm_api_key: str = ""
+    llm_model: str = "deepseek-chat"
+    llm_max_tokens: int = 4096
+    llm_temperature: float = 0.1
+
     model_config = {"env_prefix": "", "env_file": ".env", "extra": "ignore"}
 
 
